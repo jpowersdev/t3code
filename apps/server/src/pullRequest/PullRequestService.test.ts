@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
 import { assert, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -209,7 +210,7 @@ it.effect("keeps cached previews available and pauses uncached previews until qu
 );
 
 it.effect.each(["detail", "activity"] as const)(
-  "starts a fresh %s read while an abandoned read is still cleaning up",
+  "recovers a %s read that joined an abandoned lookup during cleanup",
   (operation) =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();
@@ -314,6 +315,73 @@ it.effect.each(["detail", "activity"] as const)(
       yield* Deferred.succeed(release, undefined);
       assert.deepStrictEqual(yield* Fiber.await(second), Exit.void);
       assert.strictEqual(calls, 1);
+    }),
+);
+
+it.effect.each(["detail", "activity"] as const)(
+  "does not restart a %s read canceled by its caller",
+  (operation) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      let calls = 0;
+      const lookup = Effect.gen(function* () {
+        calls++;
+        yield* Deferred.succeed(started, undefined);
+        return yield* Effect.never;
+      });
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            getChangeRequest: () => lookup,
+            getChangeRequestActivity: () => lookup,
+          }),
+        ],
+      });
+      const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const read =
+        operation === "detail"
+          ? service.detail(reference).pipe(Effect.asVoid)
+          : service.activity(reference).pipe(Effect.asVoid);
+      const pending = yield* read.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(pending);
+      const result = yield* Fiber.await(pending);
+      assert.isTrue(Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause));
+      assert.strictEqual(calls, 1);
+    }),
+);
+
+it.effect.each(["detail", "activity"] as const)(
+  "retries an interrupted %s lookup at most once",
+  (operation) =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const lookup = Effect.suspend(() => {
+        calls++;
+        return Effect.interrupt;
+      });
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            getChangeRequest: () => lookup,
+            getChangeRequestActivity: () => lookup,
+          }),
+        ],
+      });
+      const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const read =
+        operation === "detail"
+          ? service.detail(reference).pipe(Effect.asVoid)
+          : service.activity(reference).pipe(Effect.asVoid);
+      const result = yield* Effect.exit(read);
+      assert.isTrue(Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause));
+      assert.strictEqual(calls, 2);
     }),
 );
 

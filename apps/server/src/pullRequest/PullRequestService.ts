@@ -5,6 +5,7 @@ import {
 } from "@t3tools/shared/sourceControl";
 import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -2971,6 +2972,9 @@ export const make = Effect.gen(function* () {
     // than a later strict summary — display reuse would otherwise keep the
     // regression and never ask the host again.
     const read = Cache.get(detailCache, key).pipe(
+      // A reopened panel can join a lookup still canceling its last reader. Once that
+      // lookup exits, the cache evicts it; retry once without swallowing caller cancellation.
+      Effect.catchCauseIf(Cause.hasInterruptsOnly, () => Cache.get(detailCache, key)),
       Effect.tap((value) => {
         const summary = summaryFromDetail(value, lastGoodSummary.peek(key));
         return shouldReplaceHeldSummary(key, summary)
@@ -3015,7 +3019,9 @@ export const make = Effect.gen(function* () {
   };
   const activity: PullRequestService["Service"]["activity"] = (input) => {
     const key = refCacheKey(input);
-    return Cache.get(activityCache, key);
+    return Cache.get(activityCache, key).pipe(
+      Effect.catchCauseIf(Cause.hasInterruptsOnly, () => Cache.get(activityCache, key)),
+    );
   };
 
   const diffCache = yield* Cache.makeWith(

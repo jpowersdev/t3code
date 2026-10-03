@@ -1,15 +1,3 @@
-diff --git a/dist/Cache.js b/dist/Cache.js
---- a/dist/Cache.js
-+++ b/dist/Cache.js
-@@ -300,6 +300,8 @@
-     return effect.onExit(effect.fiberJoin(this.fiber), () => {
-       this.awaiters--;
-       if (this.awaiters > 0 || this.fiber.pollUnsafe()) return effect.void;
-+      // Stop new readers joining this lookup while its cancellation finalizers run.
-+      this.expiresAt = -Infinity;
-       return effect.fiberInterrupt(this.fiber);
-     });
-   }
 diff --git a/dist/unstable/ai/McpServer.js b/dist/unstable/ai/McpServer.js
 index e8b9be4..9cffc5c 100644
 --- a/dist/unstable/ai/McpServer.js
@@ -349,18 +337,6 @@ index c586c60..49886d8 100644
  /**
   * Represents optional client protocol hooks that run when a transport connects
   * and disconnects.
-diff --git a/src/Cache.ts b/src/Cache.ts
---- a/src/Cache.ts
-+++ b/src/Cache.ts
-@@ -669,6 +669,8 @@
-     return effect.onExit(effect.fiberJoin(this.fiber), () => {
-       this.awaiters--
-       if (this.awaiters > 0 || this.fiber.pollUnsafe()) return effect.void
-+      // Stop new readers joining this lookup while its cancellation finalizers run.
-+      this.expiresAt = -Infinity
-       return effect.fiberInterrupt(this.fiber)
-     })
-   }
 diff --git a/src/unstable/http/HttpClientResponse.ts b/src/unstable/http/HttpClientResponse.ts
 index cbf047f..c7d5cc2 100644
 --- a/src/unstable/http/HttpClientResponse.ts
