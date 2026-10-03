@@ -5,6 +5,7 @@ import { assert, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -205,6 +206,115 @@ it.effect("keeps cached previews available and pauses uncached previews until qu
     assert.strictEqual((yield* service.preview({ ...ref, number: 2 })).number, 2);
     assert.strictEqual(reads, 3);
   }),
+);
+
+it.effect.each(["detail", "activity"] as const)(
+  "starts a fresh %s read while an abandoned read is still cleaning up",
+  (operation) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const cleanupStarted = yield* Deferred.make<void>();
+      const releaseCleanup = yield* Deferred.make<void>();
+      let calls = 0;
+      const lookup = Effect.suspend(() => {
+        calls++;
+        if (calls > 1) return Effect.void;
+        return Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(
+            Deferred.succeed(cleanupStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseCleanup)),
+            ),
+          ),
+        );
+      });
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            getChangeRequest: () => lookup.pipe(Effect.as(hostedChangeRequest("Description"))),
+            getChangeRequestActivity: () =>
+              lookup.pipe(
+                Effect.as({
+                  comments: [],
+                  commentCount: 0,
+                  commentsTruncated: false,
+                  reviewThreads: [],
+                  commits: [],
+                }),
+              ),
+          }),
+        ],
+      });
+      const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const read =
+        operation === "detail"
+          ? service.detail(reference).pipe(Effect.asVoid)
+          : service.activity(reference).pipe(Effect.asVoid);
+      const first = yield* read.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(started);
+      const cancellation = yield* Fiber.interrupt(first).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.await(cleanupStarted);
+      // Join the same cache key before the abandoned provider call finishes its finalizers.
+      const replacement = yield* read.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.succeed(releaseCleanup, undefined);
+      const result = yield* Fiber.await(replacement);
+      yield* Fiber.join(cancellation);
+      assert.deepStrictEqual(result, Exit.void);
+      yield* read;
+      assert.strictEqual(calls, 2);
+    }),
+);
+
+it.effect.each(["detail", "activity"] as const)(
+  "keeps a shared %s read alive when only one client cancels",
+  (operation) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let calls = 0;
+      const lookup = Effect.gen(function* () {
+        calls++;
+        yield* Deferred.succeed(started, undefined);
+        yield* Deferred.await(release);
+      });
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            getChangeRequest: () => lookup.pipe(Effect.as(hostedChangeRequest("Description"))),
+            getChangeRequestActivity: () =>
+              lookup.pipe(
+                Effect.as({
+                  comments: [],
+                  commentCount: 0,
+                  commentsTruncated: false,
+                  reviewThreads: [],
+                  commits: [],
+                }),
+              ),
+          }),
+        ],
+      });
+      const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const read =
+        operation === "detail"
+          ? service.detail(reference).pipe(Effect.asVoid)
+          : service.activity(reference).pipe(Effect.asVoid);
+      const first = yield* read.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(started);
+      const second = yield* read.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Fiber.interrupt(first);
+      yield* Deferred.succeed(release, undefined);
+      assert.deepStrictEqual(yield* Fiber.await(second), Exit.void);
+      assert.strictEqual(calls, 1);
+    }),
 );
 
 it.effect("reuses only unexpired detail for previews", () =>
