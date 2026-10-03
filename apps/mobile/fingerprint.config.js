@@ -13,7 +13,6 @@ if (!majorVersion) {
   throw new Error("fingerprint.config.js could not read the app version from app.config.ts");
 }
 
-/** @type {import('@expo/fingerprint').Config} */
 module.exports = {
   extraSources: [{ type: "contents", id: "appMajorVersion", contents: majorVersion }],
 };
